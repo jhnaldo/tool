@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # pptx2pdf.sh - Convert PowerPoint (.pptx) to PDF without broken fonts/layout
 #
-#  1) Extract fonts embedded in the pptx (Windows-only compressed EOT) and install them temporarily
+#  1) Extract fonts embedded in the pptx (Windows-only compressed EOT) and use them for this conversion only
 #  2) Remove decorative background images (large photos, repeated patterns) from layouts/masters
 #  3) Convert to PDF with LibreOffice (content images downsampled to the given dpi)
 #
@@ -13,7 +13,7 @@
 #   -r DPI          Max resolution for content images (default 150; smaller: 100)
 #   -q QUALITY      JPEG quality 1-100 (default 70)
 #   --keep-decor    Do not remove decorative background images
-#   --keep-fonts    Keep the extracted fonts installed after conversion
+#   --keep-fonts    Also install the extracted fonts into the user font folder
 #                   (then the original also renders correctly in Mac PowerPoint)
 #   -h, --help      Show this help
 #
@@ -72,24 +72,35 @@ if [[ -z "$EOT2TTF" ]]; then
   EOT2TTF="$TOOL_HOME/bin/eot2ttf"
 fi
 
-if [[ "$(uname)" == "Darwin" ]]; then FONT_DIR="$HOME/Library/Fonts"; else FONT_DIR="$HOME/.fonts"; fi
-mkdir -p "$FONT_DIR"
+if [[ "$(uname)" == "Darwin" ]]; then USER_FONT_DIR="$HOME/Library/Fonts"; else USER_FONT_DIR="$HOME/.fonts"; fi
 
-INSTALLED_LIST="$(mktemp)"
 WORK_ROOT="$(mktemp -d)"
-cleanup() {
-  if [[ $KEEP_FONTS -eq 0 && -s "$INSTALLED_LIST" ]]; then
-    while IFS= read -r f; do rm -f "$f"; done < "$INSTALLED_LIST"
-    if command -v fc-cache >/dev/null; then fc-cache -f >/dev/null 2>&1 || true; fi
-  fi
-  rm -rf "$WORK_ROOT" "$INSTALLED_LIST"
+trap 'rm -rf "$WORK_ROOT"' EXIT
+
+# LibreOffice's bundled fontconfig looks for its config under /usr/local/etc/fonts,
+# which usually does not exist on macOS; then it sees only LibreOffice's own fonts
+# (no Korean/CJK at all). Give it an explicit config: system fonts + extracted fonts.
+fc_conf() {
+  cat > "$1/fonts.conf" <<EOF
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <include ignore_missing="yes">/etc/fonts/fonts.conf</include>
+  <include ignore_missing="yes">/opt/homebrew/etc/fonts/fonts.conf</include>
+  <include ignore_missing="yes">/usr/local/etc/fonts/fonts.conf</include>
+  <dir>/System/Library/Fonts</dir>
+  <dir>/Library/Fonts</dir>
+  <dir>$USER_FONT_DIR</dir>
+  <dir>$1/fonts</dir>
+  <cachedir>$TOOL_HOME/fccache</cachedir>
+</fontconfig>
+EOF
 }
-trap cleanup EXIT
 
 prep() {
-  python3 - "$1" "$2" "$EOT2TTF" "$FONT_DIR" "$INSTALLED_LIST" "$KEEP_DECOR" <<'PY'
+  python3 - "$1" "$2" "$EOT2TTF" "$3" "$KEEP_DECOR" <<'PY'
 import sys, zipfile, re, os, struct, subprocess, tempfile, posixpath, shutil
-src, dst, eot2ttf, font_dir, installed_list, keep_decor = sys.argv[1:7]
+src, dst, eot2ttf, font_dir, keep_decor = sys.argv[1:6]
 keep_decor = keep_decor == "1"
 
 SKIP = {"arial", "tahoma", "times new roman", "verdana", "georgia", "trebuchet ms",
@@ -116,7 +127,8 @@ def font_names(path):
 zin = zipfile.ZipFile(src)
 files = {i.filename: zin.read(i.filename) for i in zin.infolist()}
 
-installed = 0
+extracted = 0
+os.makedirs(font_dir, exist_ok=True)
 tmpd = tempfile.mkdtemp()
 for name in [n for n in files if n.startswith("ppt/fonts/") and n.endswith(".fntdata")]:
     eot = os.path.join(tmpd, "f.eot"); ttf = os.path.join(tmpd, "f.ttf")
@@ -133,11 +145,9 @@ for name in [n for n in files if n.startswith("ppt/fonts/") and n.endswith(".fnt
     target = os.path.join(font_dir, f"pptx2pdf_{safe}.ttf")
     if not os.path.exists(target):
         shutil.move(ttf, target)
-        with open(installed_list, "a") as f:
-            f.write(target + "\n")
-        installed += 1
+        extracted += 1
 shutil.rmtree(tmpd, ignore_errors=True)
-print(f"  - installed {installed} embedded font(s)")
+print(f"  - extracted {extracted} embedded font(s)")
 
 if not keep_decor:
     removed = 0
@@ -194,10 +204,14 @@ for IN in "${FILES[@]}"; do
   mkdir -p "$DEST"
   W="$(mktemp -d "$WORK_ROOT/job.XXXX")"
   echo "> $BASE"
-  prep "$IN" "$W/in.pptx"
-  if command -v fc-cache >/dev/null; then fc-cache -f >/dev/null 2>&1 || true; else sleep 2; fi
-  "$SOFFICE" "-env:UserInstallation=file://$W/profile" --headless \
+  prep "$IN" "$W/in.pptx" "$W/fonts"
+  fc_conf "$W"
+  FONTCONFIG_FILE="$W/fonts.conf" "$SOFFICE" "-env:UserInstallation=file://$W/profile" --headless \
     --convert-to "$FILTER" --outdir "$W" "$W/in.pptx" >"$W/log.txt" 2>&1 || true
+  if [[ $KEEP_FONTS -eq 1 ]]; then
+    mkdir -p "$USER_FONT_DIR"
+    for f in "$W"/fonts/*.ttf; do [[ -e "$f" ]] && cp -n "$f" "$USER_FONT_DIR/" || true; done
+  fi
   if [[ -f "$W/in.pdf" ]]; then
     mv -f "$W/in.pdf" "$DEST/$STEM.pdf"
     echo "  OK $DEST/$STEM.pdf ($(du -h "$DEST/$STEM.pdf" | cut -f1 | tr -d ' '))"

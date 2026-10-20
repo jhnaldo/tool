@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-# pptx2pdf.sh — PowerPoint(.pptx)를 깨짐 없이 PDF로 변환
+# pptx2pdf.sh - Convert PowerPoint (.pptx) to PDF without broken fonts/layout
 #
-#  1) pptx에 내장된 글꼴(Windows 전용 압축 EOT 형식)을 풀어서 임시 설치
-#  2) 레이아웃/마스터에 깔린 치장용 배경 이미지(대형 사진, 반복 패턴) 제거
-#  3) LibreOffice로 PDF 변환 (본문 이미지는 지정 dpi로 다운샘플)
+#  1) Extract fonts embedded in the pptx (Windows-only compressed EOT) and install them temporarily
+#  2) Remove decorative background images (large photos, repeated patterns) from layouts/masters
+#  3) Convert to PDF with LibreOffice (content images downsampled to the given dpi)
 #
-# 사용법:
-#   pptx2pdf.sh 발표자료.pptx [다른파일.pptx ...]
+# Usage:
+#   pptx2pdf.sh slides.pptx [more.pptx ...]
 #
-# 옵션:
-#   -o DIR          PDF 저장 폴더 (기본: 원본과 같은 폴더)
-#   -r DPI          본문 이미지 최대 해상도 (기본 150, 더 작게: 100)
-#   -q QUALITY      JPEG 품질 1~100 (기본 70)
-#   --keep-decor    치장용 배경 이미지 지우지 않음
-#   --keep-fonts    추출한 글꼴을 변환 후에도 설치된 채로 둠
-#                   (그러면 Mac PowerPoint에서도 원본이 제대로 보임)
-#   -h, --help      도움말
+# Options:
+#   -o DIR          Output folder for PDFs (default: same folder as the input)
+#   -r DPI          Max resolution for content images (default 150; smaller: 100)
+#   -q QUALITY      JPEG quality 1-100 (default 70)
+#   --keep-decor    Do not remove decorative background images
+#   --keep-fonts    Keep the extracted fonts installed after conversion
+#                   (then the original also renders correctly in Mac PowerPoint)
+#   -h, --help      Show this help
 #
-# 필요한 것 (최초 1회):
+# Requirements (one-time):
 #   - LibreOffice : brew install --cask libreoffice
 #   - Xcode Command Line Tools (python3, cc) : xcode-select --install
-#   eot2ttf(내장 글꼴 해제 도구)는 처음 실행할 때 자동으로 받아서 빌드합니다.
+#   eot2ttf (embedded font decoder) is downloaded and built automatically on first run.
 
 {
 set -euo pipefail
@@ -42,7 +42,7 @@ while [[ $# -gt 0 ]]; do
     --keep-decor) KEEP_DECOR=1; shift ;;
     --keep-fonts) KEEP_FONTS=1; shift ;;
     -h|--help) usage 0 ;;
-    -*) echo "알 수 없는 옵션: $1" >&2; usage 1 ;;
+    -*) echo "Unknown option: $1" >&2; usage 1 ;;
     *) FILES+=("$1"); shift ;;
   esac
 done
@@ -51,18 +51,18 @@ done
 TOOL_HOME="$HOME/.local/share/pptx2pdf"
 mkdir -p "$TOOL_HOME/bin"
 
-command -v python3 >/dev/null || { echo "python3가 없습니다: xcode-select --install" >&2; exit 1; }
+command -v python3 >/dev/null || { echo "python3 not found: xcode-select --install" >&2; exit 1; }
 
 SOFFICE="$(command -v soffice || true)"
 [[ -z "$SOFFICE" && -x /Applications/LibreOffice.app/Contents/MacOS/soffice ]] \
   && SOFFICE=/Applications/LibreOffice.app/Contents/MacOS/soffice
-[[ -z "$SOFFICE" ]] && { echo "LibreOffice가 없습니다: brew install --cask libreoffice" >&2; exit 1; }
+[[ -z "$SOFFICE" ]] && { echo "LibreOffice not found: brew install --cask libreoffice" >&2; exit 1; }
 
 EOT2TTF="$(command -v eot2ttf || true)"
 [[ -z "$EOT2TTF" && -x "$TOOL_HOME/bin/eot2ttf" ]] && EOT2TTF="$TOOL_HOME/bin/eot2ttf"
 if [[ -z "$EOT2TTF" ]]; then
-  echo "▸ eot2ttf 빌드 중 (최초 1회)..."
-  command -v cc >/dev/null || { echo "C 컴파일러가 없습니다: xcode-select --install" >&2; exit 1; }
+  echo "> Building eot2ttf (first run only)..."
+  command -v cc >/dev/null || { echo "C compiler not found: xcode-select --install" >&2; exit 1; }
   B="$(mktemp -d)"
   curl -fsSL https://codeload.github.com/umanwizard/libeot/tar.gz/refs/heads/master | tar xz -C "$B"
   ( cd "$B"/libeot-* && cc -O2 -w -std=gnu99 -DDECOMPRESS_ON -Iinc -Isrc \
@@ -137,7 +137,7 @@ for name in [n for n in files if n.startswith("ppt/fonts/") and n.endswith(".fnt
             f.write(target + "\n")
         installed += 1
 shutil.rmtree(tmpd, ignore_errors=True)
-print(f"  · 내장 글꼴 {installed}개 설치")
+print(f"  - installed {installed} embedded font(s)")
 
 if not keep_decor:
     removed = 0
@@ -175,7 +175,7 @@ if not keep_decor:
                          r'\1<a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill>', nx, flags=re.S)
         removed += nb
         files[part] = nx.encode("utf8")
-    print(f"  · 치장용 이미지 {removed}개 제거")
+    print(f"  - removed {removed} decorative image(s)")
 
 order = ["[Content_Types].xml"] + [n for n in files if n != "[Content_Types].xml"]
 with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as z:
@@ -188,21 +188,21 @@ PY
 FILTER='pdf:impress_pdf_Export:{"ReduceImageResolution":{"type":"boolean","value":"true"},"MaxImageResolution":{"type":"long","value":"'"$DPI"'"},"Quality":{"type":"long","value":"'"$QUALITY"'"},"UseLosslessCompression":{"type":"boolean","value":"false"}}'
 
 for IN in "${FILES[@]}"; do
-  [[ -f "$IN" ]] || { echo "파일 없음: $IN" >&2; continue; }
+  [[ -f "$IN" ]] || { echo "File not found: $IN" >&2; continue; }
   BASE="$(basename "$IN")"; STEM="${BASE%.*}"
   DEST="${OUTDIR:-$(cd "$(dirname "$IN")" && pwd)}"
   mkdir -p "$DEST"
   W="$(mktemp -d "$WORK_ROOT/job.XXXX")"
-  echo "▸ $BASE"
+  echo "> $BASE"
   prep "$IN" "$W/in.pptx"
   if command -v fc-cache >/dev/null; then fc-cache -f >/dev/null 2>&1 || true; else sleep 2; fi
   "$SOFFICE" "-env:UserInstallation=file://$W/profile" --headless \
     --convert-to "$FILTER" --outdir "$W" "$W/in.pptx" >"$W/log.txt" 2>&1 || true
   if [[ -f "$W/in.pdf" ]]; then
     mv -f "$W/in.pdf" "$DEST/$STEM.pdf"
-    echo "  ✓ $DEST/$STEM.pdf ($(du -h "$DEST/$STEM.pdf" | cut -f1 | tr -d ' '))"
+    echo "  OK $DEST/$STEM.pdf ($(du -h "$DEST/$STEM.pdf" | cut -f1 | tr -d ' '))"
   else
-    echo "  ✗ 변환 실패: $BASE" >&2
+    echo "  FAIL: conversion failed: $BASE" >&2
     sed 's/^/    /' "$W/log.txt" >&2
   fi
 done

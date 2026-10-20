@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# pptx2pdf.sh - Convert PowerPoint (.pptx) to PDF without broken fonts/layout
+# pptx2pdf - Convert PowerPoint (.pptx) to PDF without broken fonts/layout
 #
 #  1) Extract fonts embedded in the pptx (Windows-only compressed EOT) and use them for this conversion only
 #  2) Remove decorative background images (large photos, repeated patterns) from layouts/masters
 #  3) Convert to PDF with LibreOffice (content images downsampled to the given dpi)
 #
 # Usage:
-#   pptx2pdf.sh slides.pptx [more.pptx ...]
+#   pptx2pdf slides.pptx [more.pptx ...]
 #
 # Options:
 #   -o DIR          Output folder for PDFs (default: same folder as the input)

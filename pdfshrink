@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# pdfshrink - Shrink an existing PDF by downsampling and re-compressing its images
+#
+#  Text and vector graphics stay as they are; only raster images are resized/re-encoded.
+#  Image resolution is chosen relative to the page size, so it works the same for
+#  13.33in PowerPoint slides and 26.7in Keynote slides.
+#
+# Usage:
+#   pdfshrink file.pdf [more.pdf ...]
+#
+# Options:
+#   -l LEVEL        Preset (default: medium)
+#                     low    : 1280px page width, JPEG 50  (smallest, still readable)
+#                     medium : 1920px page width, JPEG 65  (good enough for presenting)
+#                     high   : 2560px page width, JPEG 80  (close to original)
+#   -w PIXELS       Max image resolution as pixels across the page's long edge (overrides -l)
+#   -r DPI          Max image resolution in dpi (overrides -l and -w)
+#   -q QUALITY      JPEG quality 1-100 (overrides -l)
+#   -o DIR          Output folder (default: same folder as the input)
+#   -s SUFFIX       Output name suffix (default: -reduced -> file-reduced.pdf)
+#   -h, --help      Show this help
+#
+# Requirements (one-time):
+#   - Ghostscript : brew install ghostscript
+#   - pdfinfo     : brew install poppler
+
+{
+set -euo pipefail
+
+LEVEL=medium
+PIXELS=""
+DPI=""
+QUALITY=""
+OUTDIR=""
+SUFFIX="-reduced"
+FILES=()
+
+usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -l) LEVEL="$2"; shift 2 ;;
+    -w) PIXELS="$2"; shift 2 ;;
+    -r) DPI="$2"; shift 2 ;;
+    -q) QUALITY="$2"; shift 2 ;;
+    -o) OUTDIR="$2"; shift 2 ;;
+    -s) SUFFIX="$2"; shift 2 ;;
+    -h|--help) usage 0 ;;
+    -*) echo "Unknown option: $1" >&2; usage 1 ;;
+    *) FILES+=("$1"); shift ;;
+  esac
+done
+[[ ${#FILES[@]} -eq 0 ]] && usage 1
+
+case "$LEVEL" in
+  low)    P=1280; Q=50 ;;
+  medium) P=1920; Q=65 ;;
+  high)   P=2560; Q=80 ;;
+  *) echo "Unknown level: $LEVEL (low|medium|high)" >&2; exit 1 ;;
+esac
+PIXELS="${PIXELS:-$P}"
+QUALITY="${QUALITY:-$Q}"
+
+command -v gs >/dev/null || { echo "Ghostscript not found: brew install ghostscript" >&2; exit 1; }
+command -v pdfinfo >/dev/null || { echo "pdfinfo not found: brew install poppler" >&2; exit 1; }
+
+for IN in "${FILES[@]}"; do
+  [[ -f "$IN" ]] || { echo "File not found: $IN" >&2; continue; }
+  BASE="$(basename "$IN")"; STEM="${BASE%.*}"
+  DEST="${OUTDIR:-$(cd "$(dirname "$IN")" && pwd)}"
+  mkdir -p "$DEST"
+  OUT="$DEST/$STEM$SUFFIX.pdf"
+  echo "> $BASE"
+
+  R="$DPI"
+  if [[ -z "$R" ]]; then
+    # long edge of page 1 in points (1in = 72pt) -> dpi giving PIXELS across it
+    LONG="$(pdfinfo "$IN" | awk '/^Page size:/ { print ($3 > $5 ? $3 : $5); exit }')"
+    R="$(awk -v px="$PIXELS" -v pt="${LONG:-792}" 'BEGIN { r = int(px * 72 / pt + 0.5); print (r < 36 ? 36 : r) }')"
+  fi
+
+  gs -q -dSAFER -dBATCH -dNOPAUSE -sDEVICE=pdfwrite -dCompatibilityLevel=1.5 \
+    -dDetectDuplicateImages=true -dCompressFonts=true -dSubsetFonts=true \
+    -dDownsampleColorImages=true -dColorImageDownsampleType=/Bicubic \
+    -dColorImageResolution="$R" -dColorImageDownsampleThreshold=1.0 \
+    -dAutoFilterColorImages=false -dColorImageFilter=/DCTEncode \
+    -dDownsampleGrayImages=true -dGrayImageDownsampleType=/Bicubic \
+    -dGrayImageResolution="$R" -dGrayImageDownsampleThreshold=1.0 \
+    -dDownsampleMonoImages=true -dMonoImageResolution="$((R * 2))" \
+    -dPassThroughJPEGImages=false -dJPEGQ="$QUALITY" \
+    -sOutputFile="$OUT" "$IN"
+
+  B="$(wc -c < "$IN" | tr -d ' ')"; A="$(wc -c < "$OUT" | tr -d ' ')"
+  echo "  OK $OUT ($(du -h "$IN" | cut -f1 | tr -d ' ') -> $(du -h "$OUT" | cut -f1 | tr -d ' '), $((A * 100 / B))%, ${R}dpi, q$QUALITY)"
+  [[ $A -ge $B ]] && echo "  note: output is not smaller than the input; try a lower -l / -w / -q" >&2
+done
+exit 0
+}
